@@ -201,6 +201,49 @@ public sealed partial class VertexTool( MeshTool tool ) : SelectionTool<MeshVert
 		}
 	}
 
+	public override List<MeshFace> ExtrudeSelection( Vector3 delta = default )
+	{
+		var groups = Selection.OfType<MeshVertex>()
+			.GroupBy( v => v.Component );
+
+		var connectingFaces = new List<MeshFace>();
+		if ( !groups.Any() )
+			return connectingFaces;
+
+		var selectedVertices = new List<MeshVertex>();
+		var components = groups.Select( x => x.Key );
+
+		using ( SceneEditorSession.Active.UndoScope( "Extrude Vertices" ).WithComponentChanges( components ).Push() )
+		{
+			var extrudeWidth = EditorScene.GizmoSettings.GridSpacing;
+
+			foreach ( var group in groups )
+			{
+				var component = group.Key;
+				var mesh = component.Mesh;
+				var vertices = group.Select( x => x.Handle ).ToList();
+
+				mesh.ExtendOrExtrudeVertices( vertices, 0.0f, extrudeWidth,
+					out var modifiedVertices, out _, out var newFaces );
+
+				foreach ( var hVertex in modifiedVertices )
+					selectedVertices.Add( new MeshVertex( component, hVertex ) );
+
+				foreach ( var hFace in newFaces )
+					connectingFaces.Add( new MeshFace( component, hFace ) );
+			}
+		}
+
+		Selection.Clear();
+
+		foreach ( var vertex in selectedVertices )
+			Selection.Add( vertex );
+
+		CalculateSelectionVertices();
+
+		return connectingFaces;
+	}
+
 	protected override IEnumerable<IMeshElement> GetAllSelectedElements()
 	{
 		foreach ( var group in Selection.OfType<MeshVertex>()

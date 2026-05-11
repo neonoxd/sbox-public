@@ -2624,6 +2624,87 @@ public sealed partial class PolygonMesh : IJsonConvert
 		return success;
 	}
 
+	private bool ExtrudeVertex( VertexHandle hVertex, float normalOffset, float baseWidth )
+	{
+		if ( !BevelVertex( hVertex, false, baseWidth, out _, out _ ) )
+			return false;
+
+		if ( normalOffset != 0.0f )
+		{
+			var normal = ComputeAverageVertexNormal( hVertex );
+			SetVertexPosition( hVertex, GetVertexPosition( hVertex ) + normal * normalOffset );
+		}
+
+		return true;
+	}
+
+	private Vector3 ComputeAverageVertexNormal( VertexHandle hVertex )
+	{
+		GetFacesConnectedToVertex( hVertex, out var faces );
+
+		var normal = Vector3.Zero;
+		foreach ( var hFace in faces )
+		{
+			ComputeFaceNormal( hFace, out var faceNormal );
+			normal += faceNormal;
+		}
+
+		return normal.Normal;
+	}
+
+	public bool ExtendOrExtrudeVertices( IReadOnlyList<VertexHandle> vertices, float offset, float baseWidth,
+		out List<VertexHandle> modifiedVertices, out List<VertexHandle> originalVertices, out List<FaceHandle> newFaces )
+	{
+		modifiedVertices = new List<VertexHandle>();
+		originalVertices = new List<VertexHandle>();
+		newFaces = new List<FaceHandle>();
+
+		var verticesToExtrude = new List<VertexHandle>();
+		var verticesToExtend = new List<VertexHandle>();
+
+		foreach ( var hVertex in vertices )
+		{
+			GetEdgesConnectedToVertex( hVertex, out var edges );
+
+			var numOpenEdges = 0;
+			foreach ( var hEdge in edges )
+			{
+				if ( IsEdgeOpen( hEdge ) )
+					numOpenEdges++;
+			}
+
+			if ( numOpenEdges == 2 )
+				verticesToExtend.Add( hVertex );
+			else
+				verticesToExtrude.Add( hVertex );
+		}
+
+		if ( verticesToExtend.Count > 0 )
+		{
+			Topology.ExtendVertices( verticesToExtend, verticesToExtend.Count, out var newVerts, out var origVerts );
+			modifiedVertices.AddRange( newVerts );
+			originalVertices.AddRange( origVerts );
+		}
+
+		if ( verticesToExtrude.Count > 0 )
+		{
+			foreach ( var hVertex in verticesToExtrude )
+			{
+				ExtrudeVertex( hVertex, offset, baseWidth );
+			}
+
+			modifiedVertices.AddRange( verticesToExtrude );
+			originalVertices.AddRange( verticesToExtrude );
+		}
+
+		FindFacesConnectedToVertices( modifiedVertices, modifiedVertices.Count, out var faces, out _ );
+		newFaces.AddRange( faces );
+
+		IsDirty = true;
+
+		return true;
+	}
+
 	private bool ConnectVertices( IReadOnlyList<VertexHandle> pVertices, out List<HalfEdgeHandle> outNewEdges )
 	{
 		var numVertices = pVertices.Count;

@@ -765,6 +765,95 @@ internal sealed partial class Mesh
 		return true;
 	}
 
+	public bool ExtendVertices( IReadOnlyList<VertexHandle> pVertices, int nNumOriginalVertices, out List<VertexHandle> pOutNewVertices, out List<VertexHandle> pOutOriginalVertices )
+	{
+		pOutNewVertices = new List<VertexHandle>( nNumOriginalVertices );
+		pOutOriginalVertices = new List<VertexHandle>( nNumOriginalVertices );
+
+		var candidateEdges = new List<HalfEdgeHandle>( nNumOriginalVertices );
+
+		for ( var iVertex = 0; iVertex < nNumOriginalVertices; ++iVertex )
+		{
+			GetIncomingHalfEdgesConnectedToVertex( pVertices[iVertex], out var incomingEdges );
+
+			var hOpenEdge = HalfEdgeHandle.Invalid;
+
+			foreach ( var hEdge in incomingEdges )
+			{
+				if ( GetFaceConnectedToHalfEdge( hEdge ) == FaceHandle.Invalid )
+				{
+					if ( hOpenEdge == HalfEdgeHandle.Invalid )
+					{
+						hOpenEdge = hEdge;
+					}
+					else
+					{
+						hOpenEdge = HalfEdgeHandle.Invalid;
+						break;
+					}
+				}
+			}
+
+			if ( hOpenEdge != HalfEdgeHandle.Invalid )
+			{
+				candidateEdges.Add( hOpenEdge );
+			}
+		}
+
+		var nNumCandidateEdges = candidateEdges.Count;
+		var bVertexIsPartOfEdge = new bool[nNumCandidateEdges];
+		var edgesToExtend = new List<HalfEdgeHandle>( nNumCandidateEdges );
+
+		for ( var iEdge = 0; iEdge < nNumCandidateEdges; ++iEdge )
+		{
+			var hVertex = candidateEdges[iEdge].OppositeEdge.Vertex;
+
+			for ( var jEdge = 0; jEdge < nNumCandidateEdges; ++jEdge )
+			{
+				if ( jEdge == iEdge )
+					continue;
+
+				if ( candidateEdges[jEdge].Vertex == hVertex )
+				{
+					edgesToExtend.Add( GetFullEdgeForHalfEdge( candidateEdges[iEdge] ) );
+					bVertexIsPartOfEdge[iEdge] = true;
+					bVertexIsPartOfEdge[jEdge] = true;
+					break;
+				}
+			}
+		}
+
+		if ( edgesToExtend.Count > 0 )
+		{
+			ExtendEdges( edgesToExtend, edgesToExtend.Count, out _, out _, out var newVerts, out var origVerts );
+			pOutNewVertices.AddRange( newVerts );
+			pOutOriginalVertices.AddRange( origVerts );
+		}
+
+		for ( var iVertex = 0; iVertex < nNumCandidateEdges; ++iVertex )
+		{
+			if ( bVertexIsPartOfEdge[iVertex] )
+				continue;
+
+			var hEdge = candidateEdges[iVertex];
+			var hPrevFaceEdge = FindPreviousEdgeInVertexLoop( hEdge ).OppositeEdge;
+			var hPrevVertex = hPrevFaceEdge.Vertex;
+			var hOriginalVertex = hEdge.Vertex;
+			var hNextVertex = GetNextEdgeInFaceLoop( hEdge ).Vertex;
+			var hNewVertex = AllocateVertex( Vertex.Invalid, hOriginalVertex.Index );
+
+			if ( hNewVertex != VertexHandle.Invalid )
+			{
+				AddFace( hPrevVertex, hOriginalVertex, hNextVertex, hNewVertex );
+
+				pOutNewVertices.Add( hNewVertex );
+				pOutOriginalVertices.Add( hOriginalVertex );
+			}
+		}
+
+		return true;
+	}
+
 	public int ComputeNumOpenEdgesInVertexLoop( VertexHandle hVertex )
 	{
 		if ( !hVertex.IsValid )
