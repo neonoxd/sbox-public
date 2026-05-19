@@ -442,6 +442,12 @@ public sealed partial class SceneCamera : IDisposable, IManagedCamera
 	internal bool EnableEngineOverlays { get; set; } = false;
 
 	/// <summary>
+	/// Whether the UI stage layer should be created for this camera render.
+	/// When false, the native pipeline will skip the UI layer entirely.
+	/// </summary>
+	internal bool RenderUI { get; set; } = true;
+
+	/// <summary>
 	/// When true, rendering from this camera won't request higher mip levels from
 	/// the texture streaming system. Used by cubemap rendering to prevent envmap probes
 	/// from pulling in full-resolution textures across the entire map.
