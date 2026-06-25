@@ -35,6 +35,7 @@ internal class Program
 		AddUploadSteamCommand( rootCommand );
 		AddDiscordPostCommand( rootCommand );
 		AddDownloadPublicArtifactsCommand( rootCommand );
+		AddUploadBuildArtifactsCommand( rootCommand );
 		AddCheckNativeTouchedCommand( rootCommand );
 		AddNotifySlackCommand( rootCommand );
 		AddUploadReferenceAssembliesCommand( rootCommand );
@@ -254,6 +255,13 @@ internal class Program
 		{
 			Environment.ExitCode = (int)new DownloadPublicArtifacts( nativeOnly ).Run();
 		}, nativeOnlyOption );
+		rootCommand.Add( cmd );
+	}
+
+	private static void AddUploadBuildArtifactsCommand( RootCommand rootCommand )
+	{
+		var cmd = new Command( "upload-build-artifacts", "Package a runnable build into a zip and upload it to R2" );
+		cmd.SetHandler( () => { Environment.ExitCode = (int)new UploadBuildArtifacts().Run(); } );
 		rootCommand.Add( cmd );
 	}
 
