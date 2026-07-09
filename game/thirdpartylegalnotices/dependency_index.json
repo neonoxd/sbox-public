@@ -408,19 +408,6 @@
 			]
 		},
 		{
-			"Name": "mikktspace",
-			"Comment": "Tangent space generation for normal mapping.",
-			"UsedBy": [
-				"resourcecompiler"
-			],
-			"License": "MIT",
-			"ProjectUrl": "https://github.com/mmikk/MikkTSpace/",
-			"Linkage": "header-only",
-			"Copyright": [
-				"2011 Morten S. Mikkelsen"
-			]
-		},
-		{
 			"Name": "Oculus LipSync",
 			"Comment": "Real-time phoneme / lip sync solution.",
 			"UsedBy": [
