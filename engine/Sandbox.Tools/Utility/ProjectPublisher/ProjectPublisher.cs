@@ -193,7 +193,6 @@ public partial class ProjectPublisher
 		if ( Project.Config.IsStandaloneOnly )
 			return;
 
-		await ValidateParentPackage( cancel );
 		await TryWorkshopUpload();
 
 		await PostManifest( Manifest, cancel );
@@ -213,8 +212,6 @@ public partial class ProjectPublisher
 		{
 			return;
 		}
-
-		await ValidateParentPackage( cancellationToken );
 
 		//
 		// lowercase all relative paths if we're not a source project
@@ -316,23 +313,6 @@ public partial class ProjectPublisher
 		}
 
 		throw new System.Exception( $"Unhandled status: {result}" );
-	}
-
-	private async Task ValidateParentPackage( CancellationToken cancellationToken )
-	{
-		var parentPackage = Project.Config.GetMetaOrDefault<string>( "ParentPackage", null );
-		if ( string.IsNullOrWhiteSpace( parentPackage ) )
-			return;
-
-		cancellationToken.ThrowIfCancellationRequested();
-		var package = await Package.FetchAsync( parentPackage, false );
-		cancellationToken.ThrowIfCancellationRequested();
-
-		if ( package is null )
-			throw new InvalidOperationException( $"Parent package '{parentPackage}' could not be found." );
-
-		if ( !string.Equals( package.TypeName, "game", StringComparison.OrdinalIgnoreCase ) )
-			throw new InvalidOperationException( $"Parent package '{parentPackage}' must be a game." );
 	}
 
 	async Task<bool> PostManifest( PackageManifest manifest, CancellationToken cancellationToken )
