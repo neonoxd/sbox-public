@@ -2,7 +2,7 @@
 namespace Editor.SoundEditor;
 
 [EditorForAssetType( "vsnd" )]
-public class Window : DockWindow, IAssetEditor
+public class Window : DockWindow, IAssetEditor, AssetSystem.IEventListener
 {
 	public bool CanOpenMultipleAssets => true;
 
@@ -42,18 +42,25 @@ public class Window : DockWindow, IAssetEditor
 		Timeline.SetAsset( Asset );
 		Properties.SetAsset( Asset );
 
-		OnAssetChanged();
+		ReloadSound();
 	}
 
-	private async void OnAssetChanged()
+	// Generic multicast editor event - fires whenever any asset recompiles. Refresh when it's ours.
+	void AssetSystem.IEventListener.OnAssetChanged( Asset asset )
+	{
+		if ( asset != Asset )
+			return;
+
+		ReloadSound();
+	}
+
+	private async void ReloadSound()
 	{
 		if ( !IsValid )
 			return;
 
 		if ( !SoundFile.IsValid() )
 			return;
-
-		SoundFile.OnSoundReloaded = OnAssetChanged;
 
 		if ( !await SoundFile.LoadAsync() )
 			return;
