@@ -142,6 +142,11 @@ partial class FaceTool
 			Layout.AddStretchCell();
 
 			{
+				var group = AddGroup( "Visualization" );
+				group.Add( ControlSheetRow.Create( tool.GetSerialized().GetProperty( nameof( ShowSelectionBounds ) ) ) );
+			}
+
+			{
 				var group = AddGroup( "Filtered Selection [Alt + Double Click]", collapsible: true );
 
 				var normalRow = Layout.Row();

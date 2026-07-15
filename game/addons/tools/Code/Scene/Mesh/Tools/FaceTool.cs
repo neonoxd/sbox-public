@@ -14,6 +14,7 @@ public sealed partial class FaceTool( MeshTool tool ) : SelectionTool<MeshFace>(
 {
 	MeshFace _hoverFace;
 	SceneDynamicObject _faceObject;
+	protected override bool ShowSelectionBoundsDefault => true;
 
 	//Selection
 	public bool SelectByMaterial { get; set; } = false;
@@ -129,7 +130,9 @@ public sealed partial class FaceTool( MeshTool tool ) : SelectionTool<MeshFace>(
 			}
 		}
 
-		DrawBounds();
+		if ( ShowSelectionBounds )
+			DrawBounds();
+
 		RenderSubdivisionPreview();
 	}
 

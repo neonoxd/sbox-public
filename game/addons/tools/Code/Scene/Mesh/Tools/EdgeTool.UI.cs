@@ -7,7 +7,7 @@ partial class EdgeTool
 {
 	public override Widget CreateToolSidebar()
 	{
-		return new EdgeSelectionWidget( Tool, GetSerializedSelection() );
+		return new EdgeSelectionWidget( GetSerializedSelection(), this );
 	}
 
 	public class EdgeSelectionWidget : ToolSidebarWidget
@@ -20,7 +20,7 @@ partial class EdgeTool
 		[Range( 0, 16 ), Step( 1 ), WideMode]
 		private int NumCuts = 1;
 
-		public EdgeSelectionWidget( MeshTool tool, SerializedObject selection ) : base()
+		public EdgeSelectionWidget( SerializedObject selection, EdgeTool tool ) : base()
 		{
 			AddTitle( "Edge Mode", "show_chart" );
 
@@ -28,10 +28,10 @@ partial class EdgeTool
 				var group = AddGroup( "Move Mode" );
 				var row = group.AddRow();
 				row.Spacing = 8;
-				tool.CreateMoveModeButtons( row );
+				tool.Tool.CreateMoveModeButtons( row );
 			}
 
-			_tool = tool;
+			_tool = tool.Tool;
 
 			_edges = selection.Targets
 				.OfType<MeshEdge>()
@@ -146,6 +146,11 @@ partial class EdgeTool
 			}
 
 			Layout.AddStretchCell();
+
+			{
+				var group = AddGroup( "Visualization" );
+				group.Add( ControlSheetRow.Create( tool.GetSerialized().GetProperty( nameof( ShowSelectionBounds ) ) ) );
+			}
 
 			AddShortcuts(
 				("Loop Select", "Double Click"),
