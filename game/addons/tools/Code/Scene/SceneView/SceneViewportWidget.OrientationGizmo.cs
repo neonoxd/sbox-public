@@ -198,6 +198,19 @@ public partial class SceneViewportWidget
 		var axisDir = GizmoAxes[axis];
 		_gizmoPivot = ComputeOrbitPivot();
 
+		// If we're already looking down this axis, toggle between ortho/perspective
+		var alreadyAligned = Vector3.Dot( State.CameraRotation.Forward, -axisDir ) > 0.999f;
+		var currentlyOrtho = _gizmoOrthoActive || State.Is2D;
+		if ( alreadyAligned && currentlyOrtho )
+		{
+			_gizmoOrthoActive = false;
+			if ( State.Is2D )
+				State.View = ViewMode.Perspective;
+
+			cameraTargetPosition = null;
+			return;
+		}
+
 		var distance = (State.CameraPosition - _gizmoPivot).Length;
 		if ( distance < 1f )
 			distance = 400f;
