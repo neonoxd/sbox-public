@@ -252,9 +252,21 @@ public sealed partial class ObjectSelection( MeshTool tool ) : SelectionTool( to
 		if ( Gizmo.Pressed.Any ) return;
 
 		using var scope = SceneEditorSession.Scope();
-		using var undoScope = SceneEditorSession.Active.UndoScope( "Nudge Mesh(s)" )
-			.WithGameObjectChanges( _objects, GameObjectUndoFlags.Properties )
-			.Push();
+		var duplicate = Gizmo.IsShiftPressed;
+		using var undoScope = duplicate
+			? SceneEditorSession.Active.UndoScope( "Duplicate Object(s)" )
+				.WithGameObjectCreations()
+				.WithComponentChanges( _meshes )
+				.Push()
+			: SceneEditorSession.Active.UndoScope( "Nudge Mesh(s)" )
+				.WithGameObjectChanges( _objects, GameObjectUndoFlags.Properties )
+				.Push();
+
+		if ( duplicate )
+		{
+			DuplicateSelection();
+			OnSelectionChanged();
+		}
 
 		var rotation = CalculateSelectionBasis();
 		var delta = Gizmo.Nudge( rotation, direction );
