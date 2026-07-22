@@ -40,15 +40,19 @@ sealed class Hrot3dsModel( string pakDir, string fileName, bool simulatable = fa
 			throw new InvalidDataException( $"3DS contains no mesh: {fileName}" );
 
 		var textureName = document.TextureName;
+		var resolvedName = textureName;
 		var texture = !string.IsNullOrWhiteSpace( textureName )
 			? Host.LoadTextureByStemAnywhere( textureName )
 			: null;
 		// Some shipped 3DS files contain stale or truncated source texture
 		// names (mriz.3ds says "lendigo2.psd"). Prefer the embedded name when
 		// it resolves, then fall back to HROT's runtime registration table.
-		texture ??= Host.LoadTextureByStemAnywhere(
-			Host.GetStaticModelTexture(
-				System.IO.Path.GetFileNameWithoutExtension( fileName ) ) );
+		if ( texture is null )
+		{
+			resolvedName = Host.GetStaticModelTexture(
+				System.IO.Path.GetFileNameWithoutExtension( fileName ) );
+			texture = Host.LoadTextureByStemAnywhere( resolvedName );
+		}
 
 		var material = Material.Create( "model", HrotMount.SurfaceShader );
 		material?.Set( "g_tColor", texture ?? Texture.White );
@@ -56,11 +60,6 @@ sealed class Hrot3dsModel( string pakDir, string fileName, bool simulatable = fa
 		// mriz.3ds (a grate) names "lendigo2.psd" - a truncated blendigo2 - so
 		// the alpha test has to key off whichever stem actually resolved, not
 		// off the name embedded in the file.
-		var resolvedName = !string.IsNullOrWhiteSpace( textureName )
-			? textureName
-			: Host.GetStaticModelTexture(
-				System.IO.Path.GetFileNameWithoutExtension( fileName ) );
-
 		HrotMount.ApplyAlphaMode(
 			material, Host.TextureStemAlphaKindAnywhere( resolvedName ) );
 
