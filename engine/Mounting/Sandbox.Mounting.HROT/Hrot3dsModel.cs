@@ -54,14 +54,33 @@ sealed class Hrot3dsModel( string pakDir, string fileName, bool simulatable = fa
 			texture = Host.LoadTextureByStemAnywhere( resolvedName );
 		}
 
-		var material = Material.Create( "model", HrotMount.SurfaceShader );
-		material?.Set( "g_tColor", texture ?? Texture.White );
+		// Flowing-water props (vzduchnavod, mlynvod) get HROT's animated water
+		// shader instead of the static surface one, baked into the mesh. It has to
+		// be baked here rather than set as a ModelRenderer.MaterialOverride: an
+		// override pointing at a runtime material serializes to a null path, so the
+		// prop reloads with its plain material and never animates. A material inside
+		// a Model mesh survives, the same way the world water surface does.
+		Material material;
+		if ( HrotMount.WaterfallModelStems.Contains(
+				System.IO.Path.GetFileNameWithoutExtension( fileName ) ) )
+		{
+			material = Material.Create( "model_water", HrotMount.WaterShader );
+			material?.Set( "g_tColor", texture ?? Texture.White );
+			material?.Set( "g_tDistMap",
+				Host.LoadTextureByStemAnywhere( "vodanorm" ) ?? Texture.White );
+			material?.Set( "g_flScrollSpeed", HrotMount.WaterfallScrollSpeed );
+		}
+		else
+		{
+			material = Material.Create( "model", HrotMount.SurfaceShader );
+			material?.Set( "g_tColor", texture ?? Texture.White );
 
-		// mriz.3ds (a grate) names "lendigo2.psd" - a truncated blendigo2 - so
-		// the alpha test has to key off whichever stem actually resolved, not
-		// off the name embedded in the file.
-		HrotMount.ApplyAlphaMode(
-			material, Host.TextureStemAlphaKindAnywhere( resolvedName ) );
+			// mriz.3ds (a grate) names "lendigo2.psd" - a truncated blendigo2 - so
+			// the alpha test has to key off whichever stem actually resolved, not
+			// off the name embedded in the file.
+			HrotMount.ApplyAlphaMode(
+				material, Host.TextureStemAlphaKindAnywhere( resolvedName ) );
+		}
 
 		BuildMesh(
 			document,

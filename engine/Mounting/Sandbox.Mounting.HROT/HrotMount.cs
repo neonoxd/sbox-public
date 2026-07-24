@@ -75,6 +75,65 @@ public sealed class HrotMount : BaseGameMount
 	/// </remarks>
 	public const string SurfaceShader = "shaders/hrot_color.shader";
 
+	/// <summary>
+	/// Animated-water shader: a port of HROT's own GLSL (its water fragment and
+	/// vertex pair, recovered by <c>Tools/dump_shaders.py</c>). Scrolls
+	/// <c>voda1</c> and warps it by the <c>vodanorm</c> normal map, driven by
+	/// time - the flow, wobble and distortion are all shader-side in HROT, which
+	/// is why nothing on the CPU animates the water.
+	/// </summary>
+	public const string WaterShader = "shaders/hrot_water.shader";
+
+	/// <summary>
+	/// The flowing-water models, by 3DS stem: <c>vzduchnavod</c> (257, the
+	/// waterfall) and <c>mlynvod</c> (591, the watermill race). The 3DS loader
+	/// bakes <see cref="WaterShader"/> with the scroll turned on into these,
+	/// so they flow; every other <c>voda1</c> surface only wobbles.
+	/// </summary>
+	public static readonly HashSet<string> WaterfallModelStems =
+		new( StringComparer.OrdinalIgnoreCase ) { "vzduchnavod", "mlynvod" };
+
+	/// <summary>
+	/// Whether a waterfall flows, and which way - not how fast.
+	/// </summary>
+	/// <remarks>
+	/// HROT's water vertex shader scrolls by <c>v_coords.y += transp.z * u_time</c>
+	/// where <c>transp = gl_Color.rgb</c>, so the rate is the geometry's vertex
+	/// colour <b>blue</b> channel. For the waterfall models that colour is their
+	/// GLScene material's diffuse; the live material named <c>voda1</c> reads
+	/// <c>(1, 1, 0.09)</c>, so blue is <b>0.09</b>, and with <c>u_time</c>
+	/// advancing 12.0/s (see <c>hrot_water.shader</c>) the flow is 1.08 UV/s.
+	/// Red and green are the alpha clamp; at 1,1 the waterfalls are fully opaque.
+	///
+	/// GL clamps colours to [0,1], so 1.0 would be HROT's ceiling, not its rate.
+	/// Only the sign is free - it depends on the model's UV orientation. Read with
+	/// <c>Tools/dump_live_watercolor.py</c>.
+	/// </remarks>
+	public const float WaterfallScrollSpeed = 0.09f;
+
+	/// <summary>
+	/// The alpha clamp HROT's water shader applies, by water type (cell field
+	/// <c>0x09</c>).
+	/// </summary>
+	/// <remarks>
+	/// The water grid pass switches on the type at <c>0x00D8F456</c> and sets the
+	/// surface's vertex colour: <c>(0.8, 0.91, 0)</c> for type 1 at
+	/// <c>0x00D8F485</c>, <c>(0.55, 0.9, 0)</c> for type 2 at <c>0x00D8F49E</c>.
+	/// Red and green are <c>clamp</c>'s bounds on the ripple alpha, so type 2 is
+	/// the more translucent of the two; blue is the flow rate, and being 0 is why
+	/// pools do not scroll.
+	///
+	/// Only 1 and 2 are decoded - HROT reaches them with two successive
+	/// <c>dec al; je</c> and falls through for anything else, so an unknown type
+	/// is left opaque rather than given a made-up clamp.
+	/// </remarks>
+	public static (float Min, float Max) WaterAlphaClamp( int waterType ) => waterType switch
+	{
+		1 => (0.8f, 0.91f),
+		2 => (0.55f, 0.9f),
+		_ => (1.0f, 1.0f),
+	};
+
 	/// <summary>How a texture's alpha channel should be rendered.</summary>
 	public enum AlphaKind
 	{

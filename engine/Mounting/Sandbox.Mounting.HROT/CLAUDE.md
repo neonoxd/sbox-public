@@ -19,7 +19,9 @@ Anything else in HROT folder is previous RE efforts, dumps etc. They are not rel
 resolution, the map-data grid layout and cell fields (sections 8-10), the world
 renderer decode (section 11 - per-cell traversal, boundary ownership, walls,
 stairs, risers, water, panels), props, doors, signs, sounds and lighting
-(section 12+). Section 16 is what is still open.
+(section 12+). Section 14 is the shaders - HROT does its water and other effects
+in GLSL compiled into the executable, not on the CPU, so a CPU-side search for
+them turns up nothing however hard you look. Section 17 is what is still open.
 
 ## How to work on this
 
@@ -154,6 +156,9 @@ changes here, and after any game update, since every address is build-specific.
 | `dump_model_sounds.py` | no — which models emit ambience, and its radius |
 | `dump_music.py` | no — each map's music layers; `--check` and `--verify` are its controls |
 | `dump_live_channels.py` | **yes** — what HROT is playing right now |
+| `dump_live_watercolor.py` | **yes** — water vertex colour; blue is the scroll rate, and it is only in the live material |
+| `hrot_lendec.py` | no — x86 length decoder; `--check` diffs every boundary against capstone |
+| `dump_stack_args.py` | no — forward simulation; placement args the backward reader misses, and `--scales` for per-axis scale |
 | `find_helpers.py` | no — what a map constructor calls; how new helpers get found |
 | `dump_live_grid.py` | **yes** — the main regression oracle |
 | `dump_live_volumes.py` | **yes** — moving-floor volumes, live vs static |

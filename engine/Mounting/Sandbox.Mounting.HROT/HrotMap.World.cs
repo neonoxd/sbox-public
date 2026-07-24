@@ -216,13 +216,14 @@ sealed partial class HrotMap
 		var indices = new List<int>();
 		var glassVertices = new List<SimpleVertex>();
 		var glassIndices = new List<int>();
-		var waterVertices = new List<SimpleVertex>();
-		var waterIndices = new List<int>();
+		// Water is emitted per type: the two types differ only in their alpha
+		// clamp, but that is a material constant, so they cannot share a mesh.
+		var waterByType = new Dictionary<int, (List<SimpleVertex> Vertices, List<int> Indices)>();
 		EmitWorldSurfaces( grid, vertices, indices );
 
 		EmitGlassPanels( glassVertices, glassIndices );
 
-		EmitWater( grid, waterVertices, waterIndices );
+		EmitWater( grid, waterByType );
 
 		if ( vertices.Count == 0 || indices.Count == 0 )
 		{
@@ -270,33 +271,51 @@ sealed partial class HrotMap
 			builder.AddTraceMesh( glassCollision, glassCollisionIndices );
 		}
 
-		if ( waterVertices.Count > 0 && waterIndices.Count > 0 )
+		if ( waterByType.Count > 0 )
 		{
 			var waterTexture = Host.LoadTextureAnywhere( "voda1.jpg" ) ??
 				Host.LoadTextureByStemAnywhere( "voda1" );
-			var waterMaterial = Material.Create(
-				$"hrot_world_native_water_{MapId:00}", HrotMount.SurfaceShader );
-			waterMaterial?.Set( "g_tColor", waterTexture ?? Texture.White );
+			// The distortion/normal map HROT warps the water by. Its shader calls
+			// it DistMap; the asset is vodanorm.jpg.
+			var waterNormal = Host.LoadTextureAnywhere( "vodanorm.jpg" ) ??
+				Host.LoadTextureByStemAnywhere( "vodanorm" );
 
-			// Deliberately opaque. voda1.jpg has no alpha channel, so marking
-			// the material translucent cannot make it see-through - it only
-			// disables depth writes (sbox_pixel.fxc keys that off S_TRANSLUCENT),
-			// which is strictly worse for a surface this large. HROT itself
-			// draws water with glColor3f and no blend, so opaque is also what
-			// the original does; see REVERSE_ENGINEERING.md 11.7.
-
-			var waterMesh = new Mesh( waterMaterial )
+			var quads = 0;
+			foreach ( var (waterType, surface) in waterByType )
 			{
-				Bounds = BBox.FromPoints( waterVertices.Select( x => x.position ) )
-			};
-			waterMesh.CreateVertexBuffer( waterVertices.Count, waterVertices );
-			waterMesh.CreateIndexBuffer( waterIndices.Count, waterIndices );
-			builder.AddMesh( waterMesh );
+				if ( surface.Vertices.Count == 0 || surface.Indices.Count == 0 )
+					continue;
+
+				var waterMaterial = Material.Create(
+					$"hrot_world_native_water_{MapId:00}_{waterType}",
+					HrotMount.WaterShader );
+				waterMaterial?.Set( "g_tColor", waterTexture ?? Texture.White );
+				waterMaterial?.Set( "g_tDistMap", waterNormal ?? Texture.White );
+
+				// The flow, wobble and distortion are the shader's - HROT does them
+				// in GLSL, so the C# just supplies the textures and the two numbers
+				// that vary per surface. Pools do not flow: their vertex colour's
+				// blue is 0, so g_flScrollSpeed is left at its 0 default.
+				var (alphaMin, alphaMax) = HrotMount.WaterAlphaClamp( waterType );
+				waterMaterial?.SetFeature( "F_TRANSLUCENT", 1 );
+				waterMaterial?.Set( "g_flAlphaMin", alphaMin );
+				waterMaterial?.Set( "g_flAlphaMax", alphaMax );
+
+				var waterMesh = new Mesh( waterMaterial )
+				{
+					Bounds = BBox.FromPoints( surface.Vertices.Select( x => x.position ) )
+				};
+				waterMesh.CreateVertexBuffer( surface.Vertices.Count, surface.Vertices );
+				waterMesh.CreateIndexBuffer( surface.Indices.Count, surface.Indices );
+				builder.AddMesh( waterMesh );
+				quads += surface.Indices.Count / 12;
+			}
 
 			// No collision or trace mesh: water is swum through, not stood on.
 			// The floor underneath already carries both.
 			Log.Info(
-				$"HROT map {MapId} emitted {waterIndices.Count / 12} water quads " +
+				$"HROT map {MapId} emitted {quads} water quads across " +
+				$"{waterByType.Count} type(s) " +
 				$"(texture {(waterTexture is null ? "MISSING" : "voda1")})." );
 		}
 		else
@@ -520,17 +539,17 @@ sealed partial class HrotMap
 	/// Texture coordinates come from cell *parity*, not from an atlas entry:
 	/// the tile repeats over 2x2 cells rather than once per cell.
 	///
-	/// One decoded detail is deliberately **not** applied: HROT tints the
-	/// surface with <c>glColor3f</c> by water type - <c>(0, 0.91, 0.8)</c> for
-	/// type 1 and <c>(0, 0.9, 0.55)</c> for type 2, the latter only on map 9.
-	/// The <c>simple_color</c> shader exposes nothing but <c>g_tColor</c>, so
-	/// there is nothing to apply it through. The tint is recorded here and in
-	/// 6.25 so it can be applied once there is a shader that takes one.
+	/// The <c>glColor3f</c> HROT sets per water type at <c>0x00D8F485</c> and
+	/// <c>0x00D8F49E</c> is not a tint: red and green are its shader's alpha
+	/// clamp and blue is the flow rate. Type 1 is <c>(0.8, 0.91, 0)</c> and type
+	/// 2 <c>(0.55, 0.9, 0)</c> - blue 0, so pools do not flow. Since the clamp is
+	/// a material constant, the two types are emitted as separate surfaces,
+	/// keyed here by the value of cell field <c>0x09</c>. See
+	/// REVERSE_ENGINEERING.md 14.
 	/// </remarks>
 	void EmitWater(
 		HrotMapGrid grid,
-		List<SimpleVertex> vertices,
-		List<int> indices )
+		Dictionary<int, (List<SimpleVertex> Vertices, List<int> Indices)> byType )
 	{
 		for ( var row = 0; row < HrotExecutableMapData.GridSize; row++ )
 		{
@@ -545,6 +564,19 @@ sealed partial class HrotMap
 					continue;
 
 				var height = cell.WaterHeight;
+
+				// Cell field 0x09 is the water type, and HROT switches on it with
+				// two `dec al; je` - so only 1 and 2 have a colour. Anything else
+				// is grouped under its own key rather than silently taking type
+				// 1's clamp.
+				if ( !byType.TryGetValue( cell.WaterType, out var surface ) )
+				{
+					surface = (new List<SimpleVertex>(), new List<int>());
+					byType[cell.WaterType] = surface;
+				}
+
+				var vertices = surface.Vertices;
+				var indices = surface.Indices;
 
 				// texcoord2f( s, t ) with s from the column's parity and t from
 				// the row's. Note s runs *against* the column axis: the

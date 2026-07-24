@@ -44,9 +44,18 @@ The mount currently:
 - plays each map's **background music**, the first of HROT's three crossfaded
   layers, non-positionally on the `Music` mixer;
 - renders every HROT surface with nearest-neighbour filtering, through the
-  mount's own `hrot_color.shader`.
+  mount's own `hrot_color.shader`;
+- **animates water** through `hrot_water.shader`, a port of HROT's own GLSL: the
+  sine wobble and `vodanorm` normal-map warp on every water surface, plus the
+  scroll on the flowing-water props (`vzduchnavod`, `mlynvod`), at HROT's decoded
+  rate - see section 14.
 
 Not implemented:
+
+- **spawning the spinning props.** Which models spin, on which axis and how fast
+  is decoded (`HrotExecutableAnimation`, section 12) and cross-checked, but
+  nothing applies it: a rotator has to live somewhere that survives scene
+  serialization, and that is still open;
 
 - **conveyor belts** and the **moving-volume liquid clause** (elevators and water
   that rises when triggered) - both gated on runtime cell state, see section 11.9.
@@ -81,6 +90,7 @@ absolute virtual addresses below are build-specific.
 | `HrotExecutableStaticModels.cs` | Recovers numeric static-model registrations |
 | `HrotExecutableMapData.cs` | Replays constant writes that construct the 101x101 map grid |
 | `HrotExecutableProps.cs` | Recovers static prop and ceiling-fixture calls |
+| `HrotExecutableAnimation.cs` | Recovers which prop models spin, on which axis and how fast (section 12) |
 | `HrotMap.cs` | Scene assembly: lighting, static props, fixture lights, metadata |
 | `HrotMap.World.cs` | World surfaces, ported from HROT's renderer; the load-time derive pass |
 | `HrotMap.Doors.cs` | Door leaf geometry and the GameObjects carrying them |
@@ -98,6 +108,8 @@ absolute virtual addresses below are build-specific.
 | `Tools/dump_strings.py` | The 1250-entry localisation table, both languages |
 | `Tools/dump_sounds.py` | The sound id to filename table |
 | `Tools/dump_model_sounds.py` | Which models emit a looping sound, and its radius |
+| `Tools/dump_model_spins.py` | Which models spin, on which axis and how fast; the cross-check on `HrotExecutableAnimation` |
+| `Tools/dump_shaders.py` | HROT's 13 embedded GLSL shaders; `--out` writes them to `Tools/hrot_shaders/` (section 14) |
 | `Tools/dump_music.py` | Each map's music layers; `--check` and `--verify` are its controls |
 | `Tools/dump_live_channels.py` | **Live.** What HROT is playing right now |
 | `Tools/find_helpers.py` | What a map constructor calls, and which targets are still unnamed |
@@ -282,8 +294,9 @@ The gap between 1% and 21% is wide, so the 5% threshold is not delicately
 placed. Results are cached per texture - the atlases are 1 MB each and would
 otherwise be re-read for every model that uses them.
 
-Water is left **opaque**: `voda1.jpg` has no alpha channel, so translucency
-could not make it see-through and would only cost depth writes.
+Water does not take its alpha from this path at all: `voda1.jpg` has no alpha
+channel, and HROT computes the surface's alpha in its shader from the ripple
+texture, clamped per water type. See 14.
 
 #### Compiling the shader
 
@@ -1048,9 +1061,11 @@ the flat floor.
 **UVs come from cell parity**, a 2x2-cell repeat rather than one tile per cell:
 row/column even -> `[0.0, 0.5]`, odd -> `[0.5, 1.0]`.
 
-**Tint by type** via `glColor3f`: type 1 `(0.0, 0.91, 0.8)`, type 2 `(0.0, 0.9,
-0.55)`. The mount does not apply it - `hrot_color.shader` exposes only
-`g_tColor`; the tint is recorded for a future shader.
+**Vertex colour by type** via `glColor3f` (`0x00D8F485`, `0x00D8F49E`): type 1
+`(0.8, 0.91, 0)`, type 2 `(0.55, 0.9, 0)`. This is not a tint - red and green are
+the shader's alpha clamp and blue is the flow rate, so pools are slightly
+translucent and do not scroll. The two types are emitted as separate surfaces
+because the clamp is a material constant. See 14.
 
 Water on **22 of 32 maps**, ~4400 cells. Type 1 everywhere; type 2 only on map 9
 (Sewage Treatment Plant), 15 cells - an independent cross-check, since the water
@@ -1179,6 +1194,50 @@ applies scale `0.043`. Ignoring the post-placement call makes it roughly 23
 times too large. The 3DS master-scale and object-transform chunks in this file
 are both identity/default and are not the cause.
 
+### Per-axis prop scale
+
+The uniform helper is not the only way HROT scales a prop. HROT also reaches the
+object it just placed and writes one *component* of its Scale coordinates:
+
+```text
+call Place...
+push <float value>
+mov eax,[0x00DE7EC8]; mov eax,[eax]      ; index of the object just placed
+mov edx,eax; shl eax,4; sub eax,edx      ; *15
+mov edx,[0x00DE7C94]; mov eax,[edx+eax*8]
+mov eax,[eax+0x5C]                       ; its Scale coordinates
+mov edx,<component>                      ; 0, 1 or 2
+call 0x00492D18                          ; [coords + 0x20 + component*4] = value
+```
+
+`0x00492D18` is the same `+0x20` vector layout the orientation struct uses.
+Components HROT never writes stay `1`, so a site setting only component 2
+stretches one axis and leaves the others alone. A placement can carry more than
+one: map 2 `005ECF88` sets component 0 to `0.1` *and* component 2 to `2.7`.
+
+Components are in HROT's axis order. The mesh keeps its authored 3DS
+coordinates and 3DS to HROT is `(x,y,z) -> (x,z,-y)`, so component 0 is the
+mesh's X, component 1 is HROT's vertical, and component 2 is the remaining
+horizontal axis - **HROT `(0,1,2)` maps to s&box `(X, Z, Y)`**. Component 1 can
+be negative (map 24 model 16 is `(1,-2,1)`), which is a flip, not a bad decode.
+
+**Counting these needs care.** The map constructors contain **229** calls to the
+setter, but only **40 placements across 15 maps** carry a per-axis scale. 183 of
+the 229 are in map 104 alone and follow Delphi and GLScene constructors rather
+than a placement - they scale objects that are not static props. Attribution
+therefore requires that *only known helpers stand between the placement and the
+scale write*; an unknown call drops the association. Without that rule map 104's
+writes attach to whichever prop was placed last.
+
+This is out of reach of a backward byte scan, because the write follows the call
+rather than preceding it, so it is recovered by the forward pass in
+`HrotExecutableStack`. `Tools/dump_stack_args.py --scales` is the cross-check.
+
+Verified on map 2, model 257 (`vzduchnavod`), which has six placements: the
+three at `005ECEAA`/`005ECEC6`/`005ECEE2` are adjacent, share a yaw, carry no
+scale, and are correctly thin; the three at `005ECEFC`/`005ECF42`/`005ECF88`
+each set component 2 to `2.7` and are the floor-wide ones.
+
 ### Specialized ceiling lamps
 
 These helpers do not have `mov ax,id` call sites and must be scanned as direct
@@ -1242,6 +1301,66 @@ lampa4_one: local lateral offset  -0.65, vertical +2.67
 ```
 
 The separate bulb child meshes are not yet reproduced.
+
+### Decoder gap census
+
+The prop, lamp and glass-panel readers accept a call site only when its
+arguments are pushed as literals, built by the one x87 form
+(`mov [esp],esi/edi; fild; fld tbyte[k]; faddp`), or - for panels and doors -
+emitted from the counted-loop shape `TryReadCallInstances` recognises. A census
+built by porting the C# accept/reject predicate byte-for-byte and running it
+over all 32 constructors (`Tools/dump_decoder_gaps.py` - the cross-check the
+AGENTS.md asks for; `--check` fingerprints it against this build) finds the
+readers silently skip **76** call sites, not the 30 an earlier note guessed: 66
+prop/lamp and 10 glass-panel. Addresses are build-specific and regenerated by
+the tool, so only the shape is recorded here. (Two of the 76 are phantom
+`66 B8 / E8` byte matches inside map 104's declared range where it overlaps the
+lamp-helper code - not geometry; the mount's identical scan skips them too.)
+
+The skipped sites fall into six shapes, and *most are not decoder bugs* - a
+third of them read a value that is not in the executable at all:
+
+| Cat | N | Shape | Static? |
+|---|---:|---|---|
+| A | 9 | `mov [esp],imm; push imm; push [esp+4]` - a float immediate stashed in a stack slot and reloaded past an intervening push | yes |
+| B | 11 | float arithmetic against a per-map image constant: chandeliers do `fld[k]; fsub[esp]` (= k - slot), map 26 does `fld[k]; fadd[esp+8]` (= k + slot) | 9 of 11 (the two map-6 sites read a slot written *before* the previous call, so they are not) |
+| C | 3 | counted-loop rows whose counter arithmetic is not the LEA form the panel reader handles (map-5 fluorescents, one AtHeight) | yes |
+| E | 11 | 10 panel loops where the counter maths sits *between* a literal push and the fstp block, breaking the backward reader's adjacency; plus one `PlaceAtCell` that loads the cell through `mov ecx,edi` instead of `mov ecx,imm` | yes |
+| F | 28 | the pushed float is the result of a preceding `CALL`, or an x87 expression whose spill starts before the previous call | mixed - a few are affine constants, most are call results |
+| D | 12 | the argument is read from another entity's fields (`push [eax+0x20]`) | **no - the position depends on a runtime object; porting these as constants would be wrong** |
+
+So ~34 (A, B-clean, C, E) are recoverable static geometry that renders as
+nothing today; D and the bulk of F are correctly skipped.
+
+None of A/B/C/E is fixed yet, and the reason is structural rather than a missing
+pattern. The recoverable value is not in the reader's window: in map 2 the six
+props' shared vertical is written once by `mov [esp],imm` *before the first of
+the six sibling calls* and reloaded by each through `push [esp+4]` - the callee
+pops its args (`ret N`), so the slot persists and is read again several calls
+later. The map-4 chandeliers reuse a `1.5` slot the same way. Recovering these
+needs a **stateful forward pass** that models `esp` and stack memory across
+calls; a forward simulation over the constructors (capstone) recovers all nine
+A verticals to sane, consistent values - map 2 is a row of six props sharing
+vertical -6.05.
+
+That row is Luna's waterfall, and it is what category A costs visually. Model 257
+`vzduchnavod` is placed six times on the map; the three at x `44`/`46.5`/`49`
+(z `48.67`, yaw `90`, spacing `2.5` against a mesh `2.33` wide) tile into a sheet
+as wide as the floor, and all three are category A. Only the two isolated,
+fully-literal placements survive the reader, so the waterfall renders as a
+narrow panel instead of a floor-spanning fall - a missing *row*, which reads
+in-game as a wrongly-scaled prop rather than as missing geometry. Worth
+remembering when a prop looks the wrong size: check how many of it there should
+be before suspecting its scale. `HrotExecutableProps`
+cannot host that pass: it is a backward byte-pattern matcher with no
+disassembler, so it has no instruction lengths to walk forward with, and a
+bounded backward search cannot reach a write that precedes the previous call. So
+the fix is a real x86 length decoder in the mount, which the forward pass can
+walk on - validate it by diffing its recovered arguments against the capstone
+tool across all 32 maps, and then the usual live check that the props land where
+they should. A partial length decoder is not enough: it would desync silently on
+the first unrecognised instruction and corrupt every slot address after it, a
+fresh instance of the plausible-wrong-output failure this file is mostly about.
 
 ### Doors (`0x00D77C20`)
 
@@ -1693,6 +1812,74 @@ elevator floor from water. The seeder at `0xD5DD16` puts the elevator sounds
 does **not** carry is which cells belong to a volume - triggers reference volumes
 by index only, so the `0x19` cell assignment (11.9) is still unsourced.
 
+### Prop motion: the per-model update switch
+
+Some props move on their own - a ventilator's blades, a rotating alarm light, a
+watermill wheel. None of that is animation data. It is code, in the same
+per-model update switch the ambient sounds come out of, and
+`HrotExecutableAnimation.ReadModelSpins` decodes it.
+
+A spinning case reads one Euler angle of the object's orientation, adds a
+constant, and writes it back:
+
+```text
+mov eax, [ebx-0x74]        ; the object
+call <angle getter>
+fadd dword [const]         ; += degrees this tick   (D8 05 <addr32>)
+add esp,-4 / fstp [esp] / wait
+mov eax, [ebx-0x74]
+call <angle setter>        ; E8 rel32 to 0x4A326C or 0x4A2DDC
+```
+
+The write-back setter names the axis. Orientation lives at `[obj+0x200]` with
+Euler angles at `+0x20`, `+0x24`, `+0x28`, rebuilt lazily into an axis-angle
+rotation matrix (Rodrigues, `0x0045E778`) about a per-angle axis:
+
+| Offset | Setter | Rotates about | Meaning |
+|---|---|---|---|
+| `+0x24` | `0x4A326C` | `[obj+0x58]`, the object's **Up** | **yaw** - the very setter the player-start facing goes through |
+| `+0x20` | `0x4A2DDC` | `Direction x Up` (cross product `0x0045D764`), the **Right** axis | **pitch** - horizontal, perpendicular to the way the prop faces |
+
+Thirteen models spin on a constant. `Tools/dump_model_spins.py` disassembles the
+same cases, so the byte walk and a Capstone decode can be diffed:
+
+| Model | Axis | /tick | Model | Axis | /tick |
+|---|---|---:|---|---|---:|
+| 47 kohout | pitch | 3 | 408 projektork | pitch | 5 |
+| 76 saniblik | yaw | 7 | 509 kombajn2 | pitch | 3.75 |
+| 123 vzduchnavrt | pitch | 5 | 565 vetrak | yaw | 4 |
+| 295 blikacka | yaw | 6.5 | 566 vetrak_dmg | yaw | 1.5 |
+| 359 hovno | yaw + pitch | 3 | 679 vytah_kolo | pitch | 3 |
+| 397 jumppad | yaw | 6 | 698 pikopult0 | yaw | 15 |
+| | | | 718 kalendar | pitch | 3 |
+
+The damaged fan turning at 1.5 against the intact one at 4.0 is a decent sign the
+decode is real rather than a pattern that happens to match. Around twenty further
+cases rotate through a different constant encoding, or oscillate rather than spin
+- clock hands (`rucicka`), pendulums (`kukackykyv`), carousels (`kolotoc`). Those
+are a separate job. Nothing spawns these yet; only the decode exists.
+
+#### The sim tick is fixed at 100 Hz
+
+The increment carries no delta-time scaling, and yet the speed does not follow
+the framerate. HROT drives a GLScene `TGLCadencer` whose `FixedDeltaTime` is 0
+(so the cadencer itself is variable) and runs its own fixed-step accumulator: the
+per-tick object walker `0x00D4F7FC` is followed immediately by
+
+```text
+0x00D7DE20  inc dword [0x17D76A8]
+```
+
+a sim-tick counter. Read against wall clock in the running game it is a
+rock-steady **100 Hz**, and the `0.009`/`0.011` constants bracketing a `0.01`
+step sit in the same code. So a spin is `DegreesPerTick * 100` deg/s - and that
+counter is also the clock the water shader's `u_time` is built from (section 14).
+
+**That counter is the clock to measure against.** The phase accumulator at
+`0x17D913C` (`+= 0.025` per *rendered* frame, wrapping at 360) looks like a
+timebase and is not: it tracks the framerate, and reading it gave two answers
+2.6x apart before the sim counter settled the question.
+
 ## 13. Lighting
 
 Recovered static fixture models are given approximate s&box point lights.
@@ -1744,7 +1931,155 @@ floor height >= 1.5625
 This was verified at the map-1 outdoor rocket area around model 283
 `info_raketa`, whose platform floor is at height `3.125`.
 
-## 14. Known heuristic/hacky behavior
+## 14. Shaders: the effects are GLSL, not the CPU
+
+HROT's material effects - flowing water, its wobble and distortion, drifting
+clouds - are **GLSL compiled into the executable**, not CPU animation. This is
+worth stating plainly because every CPU-side search for them comes back empty and
+each empty result looks like a decode failure: the prop's update case is
+sound-only, the material setup is a static texture-and-tint assignment,
+`RegisterModel` sets no animation flag, and the world renderer writes fixed
+texture coordinates. All four are correct, and all four are dead ends. The CPU
+feeds one uniform; the shader does the rest.
+
+Thirteen shaders parse out. They are GLScene `TGLSLShader` sources stored as
+Delphi line records:
+
+```text
+0x06 <len:1> <len bytes of one source line>     (repeated per line)
+```
+
+`Tools/dump_shaders.py` reassembles them, and `--out` writes them to
+`Tools/hrot_shaders/`. Read the source rather than inferring the effect - every
+constant is in it.
+
+### The water pair
+
+| Shader | Uniforms |
+|---|---|
+| fragment | `BaseMap` (`voda1`), `LightMap`, `BaterkaMap`, **`DistMap`**, `BaterkaOn`, `u_time` |
+| vertex | `OsvetleniMatrix`, `BaterkaMatrix`, `u_time` |
+
+`DistMap` is bound from **`vodanorm.jpg`**, a normal map shipped beside
+`voda1.jpg`. The animation is three separable things:
+
+```glsl
+// vertex - the flow. transp = gl_Color.rgb, so the BLUE channel is the rate.
+transp = gl_Color.rgb;
+v_coords.y += (transp.z * u_time);
+
+// vertex - the ripple coords, scrolling on their own, unconditionally
+dist_coords  = gl_MultiTexCoord0.st;
+dist_coords -= vec2(u_time * 0.005 * 5.0);      // = u_time * 0.025
+
+// vertex - a real geometry wave, in object space
+vec2 c2 = vec2(pos.x, pos.z);
+pos.y += (sin(c2.y + u_time/2.0) + sin((c2.x + u_time)/2.0)) * 0.015;
+
+// fragment - the wobble, always on
+vec2 u_k = vec2(15.0,-15.0);
+vec2 c = v_coords * u_k - u_k*0.5;
+TexCoord += vec2( sin((c.x + c.y + u_time*0.5) / 2.5) * 0.04 );
+
+// fragment - the normal-map warp, always on
+vec3 normal = texture2D(DistMap, dist_coords*0.5).rgb * 2.0 - 1.0;
+TexCoord += normal.xy * 0.04;
+
+// fragment - alpha from the ripple texture ("vlnky" = ripples)
+float vlnky = texture2D(DistMap, dist_coords*2.0).r;
+gl_FragColor.a = clamp(vlnky*1.5 + (1.0 - light.r*1.5), transp.x, transp.y);
+```
+
+**The scroll is per-geometry; the wobble is not** - but the mechanism is a
+*vertex colour*, not a second shader. This section previously claimed waterfalls
+got their own vertex shader; that was wrong, and it came from pairing
+`06_frag_water.glsl` with the wrong vertex source. The fragment shader uses
+`varying vec3 transp` and `dist_coords`, and the extracted `12_vert_water.glsl`
+declares neither - its real partner is the variant near `0xE1A78A` above.
+
+One program draws both. `gl_Color` carries three unrelated numbers:
+
+| channel | meaning |
+|---|---|
+| red | alpha clamp minimum (`transp.x`) |
+| green | alpha clamp maximum (`transp.y`) |
+| **blue** | **scroll rate multiplier** (`transp.z`) |
+
+The water grid pass proves it - `0x00D8F485` sets `glColor3f(0.8, 0.91, 0)` for
+water type 1 and `0x00D8F49E` sets `(0.55, 0.9, 0)` for type 2. **Blue 0**, so
+pools wobble and shimmer without flowing, with no per-geometry shader swap
+involved. Scrolling pools look nothing like HROT.
+
+`glColor3f` is dispatch slot `+0x228` (`glColor4f` is `+0x268`); the names live
+as Delphi strings without the `gl` prefix, so searching for `"glColor3f"` finds
+nothing and the slots have to come from the loader at `0x004640xx`. Note the
+stdcall push order - the **last** push is red.
+
+Because fixed-function GL clamps `gl_Color` to `[0,1]`, the flow rate can never
+exceed `1.0 * u_time`. A mount using 1.0 is therefore at HROT's *ceiling*.
+
+**The waterfalls' colour is not in the executable.** Models 257 `vzduchnavod`
+and 591 `mlynvod` (registered at `0x00DC6248`/`0x00DC6267`, both textured
+`voda1`) take their vertex colour from their GLScene *material*, applied at
+`0x004E1583` as `glColor4f([edi+0x20], [edi+0x24], [edi+0x28], ...)`. That is a
+heap object built at load time, so it is not reachable by disassembly at all -
+every literal in every draw loop is a dead end, and the census of all 21
+`glColor3f` and 36 `glColor4f` sites confirms none of them is the waterfall.
+
+Read from the running game (`Tools/dump_live_watercolor.py`), the `voda1`
+material's diffuse is **`(1, 1, 0.09)`**:
+
+| channel | value | meaning |
+|---|---|---|
+| red / green | 1, 1 | alpha clamps to 1 - waterfalls are fully opaque |
+| **blue** | **0.09** | flow = `0.09 * 12.0` = **1.08 UV/s** |
+
+Identification is structural: a GLScene material's ambient and diffuse sit
+`0x38` apart. At that spacing the generic material shows GLScene's untouched
+default `(0.8, 0.8, 0.8)` and the water one shows `(1, 1, 0.09)`. A material
+still showing the default was never coloured by HROT, so its blue is **not** a
+scroll rate. Two further checks: the read reproduces across processes (different
+instances, different heap addresses, identical values), and `--name sklo` (glass)
+shows the default, so `voda1` is the only material checked that HROT colours.
+
+### u_time advances 12.0 per second
+
+The water shader's setup block - identifiable because it is the one that binds
+`vodanorm` to `DistMap` - feeds the uniform by name:
+
+```text
+0x00D876AA  fild dword [0x17D76A8]     ; the sim-tick counter
+0x00D876B0  fld  tbyte [0x00D87790]    ; 0.06
+0x00D876B6  fmulp
+0x00D876B8  fmul dword [0x00D8779C]    ; 2.0
+0x00D876C5  mov  edx, "u_time"
+```
+
+so `u_time = tickCount * 0.12`, and that counter runs at 100 Hz (section 12) -
+**12.0 per second**. Ported against a seconds clock without the factor the whole
+effect runs 12x slow, which is exactly how it looked. Other `u_time` consumers
+use different scales (`0.025`, `24.0`), so the rate must be read from a shader's
+*own* setup block rather than assumed shared.
+
+### The port
+
+`game/mount/hrot/Assets/shaders/hrot_water.shader` reproduces the wobble, the
+warp and the scroll, the scroll behind a `g_flScrollSpeed` switch so pools leave
+it at 0 and waterfalls turn it on. Its **sign** is not decoded - it follows the
+model's UV orientation, which the 3DS files do not agree on.
+
+**The waterfall material is baked into the model, not set as a
+`MaterialOverride`.** A `ModelRenderer.MaterialOverride` pointing at a runtime
+`Material.Create` serializes as that material's resource path, and a runtime
+material has none, so it writes out null and the prop reloads with its plain
+material - neither scrolling nor wobbling, and looking exactly like a decode that
+produced nothing. `EmbeddedResource` does not rescue a component *reference* the
+way it rescues a runtime `SoundEvent`; a material inside a `Model` mesh does
+survive, which is why the water surface worked from the first build and the prop
+did not. `Hrot3dsModel` therefore builds the water material directly for
+`vzduchnavod` and `mlynvod`.
+
+## 15. Known heuristic/hacky behavior
 
 These must not be mistaken for decoded game behaviour:
 
@@ -1767,7 +2102,7 @@ accounted for most of the door and panel bugs found so far. Avoid adding a
 per-instance correction until coordinate order, cell indexing, helper semantics
 and model origin have all been checked.
 
-## 15. Useful investigation workflow
+## 16. Useful investigation workflow
 
 1. Reproduce on one named scene and identify the scene object's model ID and
    per-model instance number.
@@ -1813,7 +2148,7 @@ Cross-checking against a screenshot of the same spot in real HROT is worth the
 detour whenever "wrong texture" could equally mean "wrong tile" or "right tile,
 wrong slice".
 
-## 16. Highest-value next work
+## 17. Highest-value next work
 
 1. **Look at the maps nobody has opened.** The mount builds 32 levels;
    everything verified so far is maps 1, 2 and 5. Maps 6-29 and 100-104 have
@@ -1821,8 +2156,12 @@ wrong slice".
 2. **Decode the trigger/entity system.** It drives the moving-volume system
    (cell field `0x19`) behind elevators and rising water - see section 11.9 -
    and would also cover pickups and scripted objects.
-3. **Finish the decoder gaps**: 5 glass-panel and 25 prop call sites still
-   unread; the props need stack-slot tracking rather than pattern matching.
+3. **Finish the decoder gaps**: 76 call sites are silently skipped, categorised
+   in "Decoder gap census" (section 12). ~34 (A stack-slot reload, B
+   image-constant arithmetic like map-4's six chandeliers, C loop rows, E) are
+   recoverable static geometry but need a stateful forward pass the current
+   backward byte-pattern reader cannot host - see the census for why. D (12) and
+   most of F read runtime values and are correctly left alone.
 4. **Drive the second and third music layers.** Which track each map loads is
    decoded (section 12); what HROT crossfades them on is not. The gain fields
    are `ebx+0x430/+0x438/+0x440` off whatever `ebx` is in the mixer at

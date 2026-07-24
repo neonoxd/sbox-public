@@ -4,8 +4,30 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 
+/// <summary>One placed static prop.</summary>
+/// <remarks>
+/// <see cref="Scale"/> is per-axis, not uniform. HROT scales a prop two ways: the
+/// uniform helper <c>0x00DBDD64</c>, and by writing individual components of the
+/// placed object's Scale coordinates (<c>0x00492D18</c>, see
+/// <see cref="HrotExecutableStack"/>).
+///
+/// 40 placements across 15 maps carry a per-axis scale. The constructors contain
+/// 229 calls to that setter, but 183 are in map 104 and follow Delphi and GLScene
+/// constructors rather than a placement - those scale objects that are not static
+/// props.
+/// </remarks>
 readonly record struct HrotPropPlacement(
-	int ModelId, Vector3 Position, float Yaw, float Scale = 1.0f );
+	int ModelId, Vector3 Position, float Yaw, Vector3 Scale )
+{
+	/// <summary>
+	/// At the model's authored size - the specialized fixture helpers place their
+	/// lamps unscaled.
+	/// </summary>
+	public HrotPropPlacement( int modelId, Vector3 position, float yaw )
+		: this( modelId, position, yaw, Vector3.One )
+	{
+	}
+}
 
 readonly record struct HrotGlassPanel(
 	float X,
@@ -211,6 +233,14 @@ static class HrotExecutableProps
 				!TryVirtualAddressToOffset( constructor.End, imageBase, sections, data.Length, out var end ) )
 				return result;
 
+			// Arguments this backward reader cannot see: a float parked in a stack
+			// slot with `mov [esp],imm` and re-read by a later placement through
+			// `push [esp+4]`, where the write can precede the previous call. The
+			// forward simulation resolves those; it is consulted *only* where the
+			// backward read fails, so every site that already decoded is untouched.
+			var recovered = HrotExecutableStack.Recover(
+				data, start, end, imageBase, sections );
+
 			for ( var i = start; i + 9 <= end; i++ )
 			{
 				// Most props go through one of the generic placement wrappers
@@ -279,10 +309,21 @@ static class HrotExecutableProps
 				if ( callNextAddress == 0 ) continue;
 				var target = unchecked((uint)((long)callNextAddress + BitConverter.ToInt32( data, i + 5 )));
 				var id = BitConverter.ToUInt16( data, i + 2 );
-				var scale = TryReadPostPlacementScale(
+				var uniform = TryReadPostPlacementScale(
 					data, i + 9, end, imageBase, sections, out var recoveredScale )
 					? recoveredScale
 					: 1.0f;
+				var scale = new Vector3( uniform, uniform, uniform );
+
+				// HROT also scales individual axes, by writing components of the
+				// placed object's Scale coordinates. Those arrive in HROT's
+				// component order; the mesh keeps its authored 3DS coordinates and
+				// 3DS -> HROT is (x, y, z) -> (x, z, -y), so HROT (0, 1, 2) maps
+				// to s&box (X, Z, Y).
+				var placementCall = OffsetToVirtualAddress( i + 4, imageBase, sections );
+				if ( placementCall != 0 &&
+					recovered.Scales.TryGetValue( placementCall, out var axis ) )
+					scale *= new Vector3( axis[0], axis[2], axis[1] );
 
 				if ( target == PlaceAtCell &&
 					TryReadCellPlacement( data, start, i, out var cellX, out var cellZ, out var cellYaw ) )
@@ -299,9 +340,18 @@ static class HrotExecutableProps
 				}
 
 				var argumentCount = target is PlaceAtHeight or PlaceAboveFloor ? 4 : target == PlaceOnFloor ? 3 : 0;
-				if ( argumentCount == 0 ||
-					!TryReadPushesBackwards( data, start, i, argumentCount, imageBase, sections, out var args ) )
+				if ( argumentCount == 0 )
 					continue;
+
+				if ( !TryReadPushesBackwards( data, start, i, argumentCount, imageBase, sections, out var args ) )
+				{
+					// The call is the E8 at i+4; the forward pass keys on it.
+					var callAddress = OffsetToVirtualAddress( i + 4, imageBase, sections );
+					if ( callAddress == 0 ||
+						!recovered.Arguments.TryGetValue( callAddress, out args ) ||
+						args is null || args.Length != argumentCount )
+						continue;
+				}
 
 				if ( target == PlaceAtHeight )
 				{
